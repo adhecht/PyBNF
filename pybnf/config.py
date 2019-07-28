@@ -217,7 +217,7 @@ class Configuration(object):
                                 'crossover_number', 'zeta', 'lambda', 'gamma_prob'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
-                                'simplex_stop_tol',
+                                'simplex_stop_tol'},
                         'aco': {'archive_size', 'convergence_rate', 'search_locality'}
                         }
         ignored_params = set()
