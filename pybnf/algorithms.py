@@ -1220,6 +1220,148 @@ class ParticleSwarm(Algorithm):
     def add_iterations(self, n):
         self.max_evals += n * self.config.config['population_size']
 
+class AntColony(Algorithm):
+    """
+    Implements ant colony optimization.
+
+    The implementation follows Socha and Dorigo, 2008.
+    """
+
+    def __init__(self, config):
+        """
+        Initial configuration of ant colony optimizer.
+        :param config: The fitting configuration
+        :type config: Configuration
+
+        The config should contain the following definitions:
+        population_size - number of ants per iteration.
+        search_locality - modulates solution weight generation; smaller values place more
+                          weight on good solutions, while larger values generate more uniform weights.
+        convergence_rate - modulates the standard deviation calculated for each gaussian during parameter
+                           set construction; smaller values lead to faster convergence.
+        archive_size - number of solutions to track; according to Socha and Dorigo 2008, archive_size should
+                       be at least as large as the number of free parameters.
+        """
+        super(AntColony, self).__init__(config)
+
+        # Save config parameters
+        # TODO: Choose better names for search_locality and convergence_rate parameters
+        self.population_size = self.config.config['population_size']
+        self.search_locality = self.config.config['search_locality']
+        self.convergence_rate = self.config.config['convergence_rate']
+        self.archive_size = self.config.config['archive_size']
+
+        self.sims_completed = 0
+
+        # Set-up the solution archive data structure (list of dicts)
+        # Table entries are structured as {'Score':SCORE, 'Weight':WEIGHT, 'PSet':PSet}
+        # When archive_size solutions have been collected, archive_ready is set to True
+        self.archive = list()
+        self.archive_ready = False
+
+    def generate_weight(self, rank):
+        """ Generates a weight for a given solution according to rank. """
+        q = self.search_locality
+        k = self.archive_size
+        v1 = 1 / (q * k * np.sqrt(2 * np.pi))
+        v2 = np.exp(-((rank-1)**2)/(2*(q**2)*(k**2)))
+        weight = v1 * v2
+        return weight
+
+    def start_run(self):
+        """
+        Start the run by generating population_size parameter sets.
+        """
+        psets = list()
+        if self.config.config['initialization'] == 'lh':
+            psets = self.random_latin_hypercube_psets(self.population_size)
+        else:
+            psets = [self.random_pset() for i in range(self.population_size)]
+        return psets
+
+
+    def got_result(self, res):
+        """
+        :param res: Result object containing the run PSet and the resulting Data.
+        :type res: Result
+        :return:
+        """
+
+        paramset = res.pset
+        score = res.score
+        
+        # Append the solution to the archive.
+        if not self.archive_ready:
+            self.archive.append({'score':score, 'weight':None, 'pset':paramset})
+        else:
+            # Check solution against current worst solution
+            if score < self.archive[-1]['score']:
+                self.archive[-1]['score'] = score
+                self.archive[-1]['weight'] = None
+                self.archive[-1]['pset'] = paramset
+
+        self.sims_completed += 1
+        if self.sims_completed % self.population_size == 0:
+            iters_completed = self.sims_completed / self.population_size
+            if (self.sims_completed / self.population_size) % 10 == 0:
+                print1('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
+
+            else:
+                print2('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
+
+                print2("Current best: %f" % self.archive[0]['score'])
+
+            if iters_completed >= self.max_iterations:
+                return 'STOP'
+
+        # Check status of solution archive
+        if len(self.archive) == self.archive_size:
+            self.archive_ready = True
+
+        # Re-sort the solution archive
+        self.archive = sorted(self.archive, key=lambda x: x['score'])
+
+        print2("Score: %f" % score)
+
+
+        # Generate next parameter set based on status of archive
+        if self.archive_ready:
+            # Archive is complete, so generate using ACO algorithm
+            # Re-calculate weights
+            for rank in range(0, self.archive_size):
+                self.archive[rank]['weight'] = self.generate_weight(rank)
+
+            # Calculate probabilities
+            weight_sum = 0
+            p_vector = np.zeros(shape=(self.archive_size,))
+            for solution in self.archive:
+                weight_sum += solution['weight']
+
+            for i in range(0, self.archive_size):
+                p_vector[i] = self.archive[i]['weight'] / weight_sum
+
+            # Construct a new parameter set
+            new_vars = []
+
+            for param in sorted(self.archive[0]['pset'].keys()):
+                # Select Gaussian within Gaussian kernel PDF (Stage 1)
+                gaussian = np.random.choice((list(map(lambda x:x, range(0, self.archive_size)))), p=p_vector)
+                mean = self.archive[gaussian]['pset'].get_param(param).value
+                # Compute SD for selected Gaussian
+                v1 = 0
+                for i in range(0, self.archive_size):
+                    v1 += (abs(self.archive[i]['pset'].get_param(param).value - mean) / (self.archive_size - 1))
+                sd = self.convergence_rate * v1
+                # Generate new parameter value
+                value = abs(np.random.normal(mean, sd)) # TODO: Fix to respect box constraints
+                new_vars.append(self.archive[0]['pset'].get_param(param).set_value(value))
+
+            # Finalize the parameter set
+            new_pset = PSet(new_vars)
+        else:
+            # Archive is not ready, so continue randomly sampling from the input parameter range
+            new_pset = self.random_pset()
+        return [new_pset]
 
 class DifferentialEvolutionBase(Algorithm):
 
@@ -2882,144 +3024,3 @@ def exp10(n):
                          'This may be because you declared a lognormal_var or a logvar, and specified the '
                          'arguments in regular space instead of log10 space.' % n)
     return ans
-
-class AntColony(Algorithm):
-    """
-    Implements ant colony optimization.
-
-    The implementation follows Socha and Dorigo, 2008.
-    """
-
-    def __init__(self, config):
-        """
-        Initial configuration of ant colony optimizer.
-        :param config: The fitting configuration
-        :type config: Configuration
-
-        The config should contain the following definitions:
-        population_size -
-        search_locality -
-        convergence_rate -
-        archive_size -
-
-        """
-        super(AntColony, self).__init__(config)
-
-        # Save config parameters
-        # TODO: Choose better names for search_locality and convergence_rate parameters
-        self.population_size = self.config.config['population_size']
-        self.search_locality = self.config.config['search_locality']
-        self.convergence_rate = self.config.config['convergence_rate']
-        self.archive_size = self.config.config['archive_size']
-
-        self.sims_completed = 0
-
-        # Set-up the solution archive data structure (list of dicts)
-        # Table entries are structured as {'Score':SCORE, 'Weight':WEIGHT, 'PSet':PSet}
-        # When archive_size solutions have been collected, archive_ready is set to True
-        self.archive = list()
-        self.archive_ready = False
-
-    def generate_weight(self, rank):
-        """ Generates a weight for a given solution according to rank. """
-        q = self.search_locality
-        k = self.archive_size
-        v1 = 1 / (q * k * np.sqrt(2 * np.pi))
-        v2 = np.exp(-((rank-1)**2)/(2*(q**2)*(k**2)))
-        weight = v1 * v2
-        return weight
-
-    def start_run(self):
-        """
-        Start the run by generating population_size parameter sets.
-        """
-        psets = list()
-        if self.config.config['initialization'] == 'lh':
-            psets = self.random_latin_hypercube_psets(self.population_size)
-        else:
-            psets = [self.random_pset() for i in range(self.population_size)]
-        return psets
-
-
-    def got_result(self, res):
-        """
-        :param res: Result object containing the run PSet and the resulting Data.
-        :type res: Result
-        :return:
-        """
-
-        paramset = res.pset
-        score = res.score
-        
-        # Append the solution to the archive.
-        if not self.archive_ready:
-            self.archive.append({'score':score, 'weight':None, 'pset':paramset})
-        else:
-            # Check solution against current worst solution
-            if score < self.archive[-1]['score']:
-                self.archive[-1]['score'] = score
-                self.archive[-1]['weight'] = None
-                self.archive[-1]['pset'] = paramset
-
-        self.sims_completed += 1
-        if self.sims_completed % self.population_size == 0:
-            iters_completed = self.sims_completed / self.population_size
-            if (self.sims_completed / self.population_size) % 10 == 0:
-                print1('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
-
-            else:
-                print2('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
-
-                print2("Current best: %f" % self.archive[0]['score'])
-
-            if iters_completed >= self.max_iterations:
-                return 'STOP'
-
-        # Check status of solution archive
-        if len(self.archive) == self.archive_size:
-            self.archive_ready = True
-
-        # Re-sort the solution archive
-        self.archive = sorted(self.archive, key=lambda x: x['score'])
-
-        print2("Score: %f" % score)
-
-
-        # Generate next parameter set based on status of archive
-        if self.archive_ready:
-            # Archive is complete, so generate using ACO algorithm
-            # Re-calculate weights
-            for rank in range(0, self.archive_size):
-                self.archive[rank]['weight'] = self.generate_weight(rank)
-
-            # Calculate probabilities
-            weight_sum = 0
-            p_vector = np.zeros(shape=(self.archive_size,))
-            for solution in self.archive:
-                weight_sum += solution['weight']
-
-            for i in range(0, self.archive_size):
-                p_vector[i] = self.archive[i]['weight'] / weight_sum
-
-            # Construct a new parameter set
-            new_vars = []
-
-            for param in sorted(self.archive[0]['pset'].keys()):
-                # Select Gaussian within Gaussian kernel PDF (Stage 1)
-                gaussian = np.random.choice((list(map(lambda x:x, range(0, self.archive_size)))), p=p_vector)
-                mean = self.archive[gaussian]['pset'].get_param(param).value
-                # Compute SD for selected Gaussian
-                v1 = 0
-                for i in range(0, self.archive_size):
-                    v1 += (abs(self.archive[i]['pset'].get_param(param).value - mean) / (self.archive_size - 1))
-                sd = self.convergence_rate * v1
-                # Generate new parameter value
-                value = abs(np.random.normal(mean, sd)) # TODO: Fix to respect box constraints
-                new_vars.append(self.archive[0]['pset'].get_param(param).set_value(value))
-
-            # Finalize the parameter set
-            new_pset = PSet(new_vars)
-        else:
-            # Archive is not ready, so continue randomly sampling from the input parameter range
-            new_pset = self.random_pset()
-        return [new_pset]
