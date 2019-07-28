@@ -192,7 +192,11 @@ class Configuration(object):
             'gamma_prob': 0.1,
             'zeta': 1e-6,
             'lambda': 0.1,
-            'crossover_number': 3
+            'crossover_number': 3,
+
+            'archive_size':50,
+            'convergence_rate':0.5,
+            'search_locality':10**-4
         }
         return default
 
@@ -213,7 +217,8 @@ class Configuration(object):
                                 'crossover_number', 'zeta', 'lambda', 'gamma_prob'},
                         'sim': {'simplex_step', 'simplex_log_step', 'simplex_reflection', 'simplex_expansion',
                                 'simplex_contraction', 'simplex_shrink', 'simplex_max_iterations',
-                                'simplex_stop_tol'}
+                                'simplex_stop_tol',
+                        'aco': {'archive_size', 'convergence_rate', 'search_locality'}
                         }
         ignored_params = set()
         thisalg = conf_dict['fit_type']

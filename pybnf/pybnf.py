@@ -206,12 +206,14 @@ def main():
                 alg = algs.SimplexAlgorithm(config)
             elif config.config['fit_type'] == 'ade':
                 alg = algs.AsynchronousDifferentialEvolution(config)
+            elif config.config['fit_type'] == 'aco':
+                alg = algs.AntColony(config)
             elif config.config['fit_type'] == 'dream':
                 alg = algs.DreamAlgorithm(config)
             elif config.config['fit_type'] == 'check':
                 alg = algs.ModelCheck(config)
             else:
-                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, ss, mh, pt, sa, sim, check' % config.config['fit_type'])
+                raise PybnfError('Invalid fit_type %s. Options are: pso, de, ade, aco, ss, mh, pt, sa, sim, check' % config.config['fit_type'])
 
         # Override configuration values if provided on command line
         if cmdline_args.cluster_type:
