@@ -1259,6 +1259,10 @@ class AntColony(Algorithm):
         self.archive = list()
         self.archive_ready = False
 
+        if self.archive_size < len(self.variables):
+            # TODO: Raise an error or log a warning.
+            pass
+
     def generate_weight(self, rank):
         """ Generates a weight for a given solution according to rank. """
         q = self.search_locality
@@ -1317,12 +1321,12 @@ class AntColony(Algorithm):
         # Check status of solution archive
         if len(self.archive) == self.archive_size:
             self.archive_ready = True
+            print2('Solution archive initialized.')
 
         # Re-sort the solution archive
         self.archive = sorted(self.archive, key=lambda x: x['score'])
 
         print2("Score: %f" % score)
-
 
         # Generate next parameter set based on status of archive
         if self.archive_ready:
@@ -1353,7 +1357,15 @@ class AntColony(Algorithm):
                     v1 += (abs(self.archive[i]['pset'].get_param(param).value - mean) / (self.archive_size - 1))
                 sd = self.convergence_rate * v1
                 # Generate new parameter value
-                value = abs(np.random.normal(mean, sd)) # TODO: Fix to respect box constraints
+                value = abs(np.random.normal(mean, sd))
+                # Check boundary constraints
+                # TODO: Should it be an option to reflect from the boundary?
+                lower_bound = self.archive[0]['pset'].get_param(param).p1
+                upper_bound = self.archive[0]['pset'].get_param(param).p2
+                if value < lower_bound:
+                    value = lower_bound
+                elif value > upper_bound:
+                    value = upper_bound
                 new_vars.append(self.archive[0]['pset'].get_param(param).set_value(value))
 
             # Finalize the parameter set
