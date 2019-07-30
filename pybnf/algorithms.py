@@ -1315,12 +1315,11 @@ class AntColony(Algorithm):
             value = self.generate_parameter_value(var.name) 
 
             # Check constraints
-            lb = template_param.p1
-            ub = template_param.p2
-            if value < lb:
-                value = lb
-            elif value > ub:
-                value = ub
+            # TODO: Should reflection off the boundary be allowed?
+            if value < template_param.lower_bound:
+                value = template_param.lower_bound
+            elif value > template_param.upper_bound:
+                value = template_param.upper_bound
 
             new_vars.append(template_param.set_value(value))
 
