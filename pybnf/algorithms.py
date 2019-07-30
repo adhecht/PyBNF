@@ -1277,7 +1277,7 @@ class AntColony(Algorithm):
         :param var: The parameter in question.
         :type var: FreeParameter
         """
-        ref = self.archive[idx]['pset'].get_param_value(var)
+        ref = self.archive[idx]['pset'].get_param(var).value
         v1 = 0
         for i in range(0, self.archive_size):
             v1 += (abs(self.archive[i]['pset'].get_param(var).value - ref) / (self.archive_size - 1))
@@ -1311,8 +1311,8 @@ class AntColony(Algorithm):
         new_vars = []
 
         for var in self.variables:
-            template_param = self.archive[0]['pset'].get_param(var)
-            value = self.generate_parameter(var) 
+            template_param = self.archive[0]['pset'].get_param(var.name)
+            value = self.generate_parameter_value(var.name) 
 
             # Check constraints
             lb = template_param.p1
