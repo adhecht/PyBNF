@@ -3,6 +3,7 @@ import numpy.testing as npt
 from os import mkdir, path
 from shutil import rmtree
 from copy import deepcopy
+from numpy import log10
 
 class TestAntColony:
     def __init__(self):
@@ -34,26 +35,38 @@ class TestAntColony:
                                            'initialization': 'lh', 
                                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
                                            'output_dir': 'test_aco', 
-                                           ('uniform_var', 'v1__FREE'): [0, 10],
+                                           ('uniform_var', 'v1__FREE'): [0.01, 10],
                                            ('loguniform_var', 'v2__FREE'): [0.01, 1e5],
-                                           ('lognormal_var', 'v3__FREE'): [0, 1]})
+                                           ('lognormal_var', 'v3__FREE'): [0.01, 1]})
 
     @classmethod
     def teardown_class(cls):
         if path.isdir('test_aco'):
             rmtree('test_aco')
 
-    def test_random_pset(self):
-        """Designed to test random parameter set generation"""
-        pass
-
     def test_archive_pset(self):
-        """Designed to test parameter set generation from archived solutions"""
+        """Test parameter set generation from archived solutions"""
         aco = algorithms.AntColony(self.config)
-
+        start_params = aco.start_run()
+        next_params = []
+        for p in start_params:
+            new_result = algorithms.Result(p, self.sim_data_obj, 'sim_1')
+            new_result.score = aco.objective.evaluate(self.sim_data_obj, self.exp_data_obj)
+            next_params.append(aco.got_result(new_result)[0])
+        # Check that box constraints are respected.
+        for pset in next_params:
+            p1_lb, p1_ub = pset.get_param('v1__FREE').lower_bound, pset.get_param('v1__FREE').upper_bound
+            p2_lb, p2_ub = pset.get_param('v2__FREE').lower_bound, pset.get_param('v2__FREE').upper_bound
+            p3_lb, p3_ub = pset.get_param('v3__FREE').lower_bound, pset.get_param('v3__FREE').upper_bound
+            assert(p1_lb <= pset.get_param('v1__FREE').value <= p1_ub)
+            assert(p2_lb <= pset.get_param('v2__FREE').value <= p2_ub)
+            assert(p3_lb <= pset.get_param('v3__FREE').value <= p3_ub)
+        # Check that the probability vector is normalized
+        # Rounding to 6 decimal digits to allow for floating point error
+        assert(round(sum(aco.prob_vector),6) == 1.00000)
 
     def test_start(self):
-        """Designed to test algorithm initialization"""
+        """Test algorithm initialization"""
         aco = algorithms.AntColony(self.config)
 
         # Check solution archive set-up
@@ -69,14 +82,13 @@ class TestAntColony:
         assert(len(aco.archive) == 0)
 
     def test_archive_update(self):
-        """Designed to test updating the solution archive prior to filling the archive"""
+        """Test solution archive updates"""
         aco = algorithms.AntColony(self.config)
         start_params = aco.start_run()
-        next_params = []
         for p in start_params:
             new_result = algorithms.Result(p, self.sim_data_obj, 'sim_1')
             new_result.score = aco.objective.evaluate(self.sim_data_obj, self.exp_data_obj)
-            next_params.append(aco.got_result(new_result))
+            _ = aco.got_result(new_result)
         assert(len(aco.archive) == 10)
         proposed_best = aco.archive[0]['score']
         for solution in aco.archive:
