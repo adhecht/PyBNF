@@ -1263,8 +1263,9 @@ class AntColony(Algorithm):
         self.prob_vector = np.zeros(shape=(self.archive_size,))
 
         if self.archive_size < len(self.variables):
-            # TODO: Raise an error or log a warning.
-            pass
+            # NOTE (adh): Should this really be an error?
+            logger.warning('The size of the solution archive should be greater or equal to the\n'
+                           'number of free parameters for optimal fitting.')
 
     def calculate_standard_deviation(self, idx, var):
         """
@@ -1426,8 +1427,10 @@ class AntColony(Algorithm):
         # Generate next parameter set based on status of archive
         if self.archive_ready:
             # Archive is complete, so generate using ACO algorithm
-            self.update_weights()
-            self.update_probabilities()
+            if archive_updated:
+                # We only have to update the weights and probabilities if the archive updates
+                self.update_weights()
+                self.update_probabilities()
             new_pset = self.generate_parameter_set()
         else:
             # Archive is not ready, so continue randomly sampling from the input parameter range
