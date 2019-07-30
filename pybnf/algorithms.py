@@ -1259,18 +1259,105 @@ class AntColony(Algorithm):
         self.archive = list()
         self.archive_ready = False
 
+        # The probability associated with each solution in the archive
+        self.prob_vector = np.zeros(shape=(self.archive_size,))
+
         if self.archive_size < len(self.variables):
             # TODO: Raise an error or log a warning.
             pass
 
+    def calculate_standard_deviation(self, idx, var):
+        """
+        Calculates the average distance from the selected parameter value to all other instances
+        of the same parameter in the solution archive. This value is taken to be the standard
+        deviation of the gaussian represented by the idx-th solution.
+
+        :param idx: The index of the reference parameter.
+        :type idx: int
+        :param var: The parameter in question.
+        :type var: FreeParameter
+        """
+        ref = self.archive[idx]['pset'].get_param_value(var)
+        v1 = 0
+        for i in range(0, self.archive_size):
+            v1 += (abs(self.archive[i]['pset'].get_param(var).value - ref) / (self.archive_size - 1))
+        return self.convergence_rate * v1
+
+
+    def generate_parameter_value(self, var):
+        """
+        Proposes a new parameter value using the given solution archive.
+        :param var: The parameter to generate.
+        :type var: FreeParameter
+        :param probs: Vector containing the probability of selecting each gaussian in the gaussian kernel.
+        :type probs: numpy.Array
+        """
+        idx_list = list(range(0, self.archive_size))
+        gaussian_idx = np.random.choice(idx_list, p=self.prob_vector)
+
+        # Collect the moments of the distribution
+        mean = self.archive[gaussian_idx]['pset'].get_param(var).value
+        sd = self.calculate_standard_deviation(gaussian_idx, var)
+
+        # Generate the new parameter value
+        new_value = np.random.normal(mean, sd)
+
+        return new_value
+
+    def generate_parameter_set(self):
+        """
+        Proposes a new parameter set given the current state of the solution archive.
+        """
+        new_vars = []
+
+        for var in self.variables:
+            template_param = self.archive[0]['pset'].get_param(var)
+            value = self.generate_parameter(var) 
+
+            # Check constraints
+            lb = template_param.p1
+            ub = template_param.p2
+            if value < lb:
+                value = lb
+            elif value > ub:
+                value = ub
+
+            new_vars.append(template_param.set_value(value))
+
+        new_pset = PSet(new_vars)
+        return new_pset
+
     def generate_weight(self, rank):
-        """ Generates a weight for a given solution according to rank. """
+        """
+        Generates a weight for a particular solution based on rank.
+        :param rank: The solution rank.
+        :type rank: int
+        """
         q = self.search_locality
         k = self.archive_size
         v1 = 1 / (q * k * np.sqrt(2 * np.pi))
         v2 = np.exp(-((rank-1)**2)/(2*(q**2)*(k**2)))
         weight = v1 * v2
         return weight
+
+    def update_weights(self):
+        """
+        Updates the weight of each solution in the archive.
+        """
+        for rank in range(0, self.archive_size):
+            self.archive[rank]['weight'] = self.generate_weight(rank)
+        return
+
+    def update_probabilities(self):
+        """
+        Updates the probability associated with each solution in the archive.
+        """
+        weight_sum = 0
+        for solution in self.archive:
+            weight_sum += solution['weight']
+        for i in range(0, self.archive_size):
+            self.prob_vector[i] = self.archive[i]['weight'] / weight_sum
+        return
 
     def start_run(self):
         """
@@ -1293,21 +1380,40 @@ class AntColony(Algorithm):
 
         paramset = res.pset
         score = res.score
+
+        # Report the score
+        print2("Score: %f" % score)
         
-        # Append the solution to the archive.
+        archive_updated = False
+        # Check if the archive is full; if not, append the new solution
         if not self.archive_ready:
             self.archive.append({'score':score, 'weight':None, 'pset':paramset})
+            archive_updated = True
         else:
-            # Check solution against current worst solution
+            # Check solution against current worst solution;
+            # we assume the archive is sorted in descending order (worst-last)
             if score < self.archive[-1]['score']:
                 self.archive[-1]['score'] = score
                 self.archive[-1]['weight'] = None
                 self.archive[-1]['pset'] = paramset
+                archive_updated = True
 
+        # Check status of solution archive
+        if len(self.archive) == self.archive_size:
+            self.archive_ready = True
+            print2('Solution archive initialized.')
+
+        # Re-sort the solution archive if updated
+        if archive_updated:
+            self.archive = sorted(self.archive, key=lambda x: x['score'])
+
+        # Update the sims_completed counter
         self.sims_completed += 1
+
+        # Handle per iteration events
         if self.sims_completed % self.population_size == 0:
             iters_completed = self.sims_completed / self.population_size
-            if (self.sims_completed / self.population_size) % 10 == 0:
+            if iters_completed % 10 == 0:
                 print1('Completed %i of %i simulations' % (self.sims_completed, self.max_iterations * self.population_size))
 
             else:
@@ -1318,58 +1424,12 @@ class AntColony(Algorithm):
             if iters_completed >= self.max_iterations:
                 return 'STOP'
 
-        # Check status of solution archive
-        if len(self.archive) == self.archive_size:
-            self.archive_ready = True
-            print2('Solution archive initialized.')
-
-        # Re-sort the solution archive
-        self.archive = sorted(self.archive, key=lambda x: x['score'])
-
-        print2("Score: %f" % score)
-
         # Generate next parameter set based on status of archive
         if self.archive_ready:
             # Archive is complete, so generate using ACO algorithm
-            # Re-calculate weights
-            for rank in range(0, self.archive_size):
-                self.archive[rank]['weight'] = self.generate_weight(rank)
-
-            # Calculate probabilities
-            weight_sum = 0
-            p_vector = np.zeros(shape=(self.archive_size,))
-            for solution in self.archive:
-                weight_sum += solution['weight']
-
-            for i in range(0, self.archive_size):
-                p_vector[i] = self.archive[i]['weight'] / weight_sum
-
-            # Construct a new parameter set
-            new_vars = []
-
-            for param in sorted(self.archive[0]['pset'].keys()):
-                # Select Gaussian within Gaussian kernel PDF (Stage 1)
-                gaussian = np.random.choice((list(map(lambda x:x, range(0, self.archive_size)))), p=p_vector)
-                mean = self.archive[gaussian]['pset'].get_param(param).value
-                # Compute SD for selected Gaussian
-                v1 = 0
-                for i in range(0, self.archive_size):
-                    v1 += (abs(self.archive[i]['pset'].get_param(param).value - mean) / (self.archive_size - 1))
-                sd = self.convergence_rate * v1
-                # Generate new parameter value
-                value = abs(np.random.normal(mean, sd))
-                # Check boundary constraints
-                # TODO: Should it be an option to reflect from the boundary?
-                lower_bound = self.archive[0]['pset'].get_param(param).p1
-                upper_bound = self.archive[0]['pset'].get_param(param).p2
-                if value < lower_bound:
-                    value = lower_bound
-                elif value > upper_bound:
-                    value = upper_bound
-                new_vars.append(self.archive[0]['pset'].get_param(param).set_value(value))
-
-            # Finalize the parameter set
-            new_pset = PSet(new_vars)
+            self.update_weights()
+            self.update_probabilities()
+            new_pset = self.generate_parameter_set()
         else:
             # Archive is not ready, so continue randomly sampling from the input parameter range
             new_pset = self.random_pset()
