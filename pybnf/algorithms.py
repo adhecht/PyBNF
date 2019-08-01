@@ -1224,7 +1224,10 @@ class AntColony(Algorithm):
     """
     Implements ant colony optimization.
 
-    The implementation follows Socha and Dorigo, 2008.
+    The implementation follows Socha and Dorigo, 2008, with one slight modification.
+    In order to reduce idle CPU time, random parameter sets are generated until the solution archive
+    is filled; this means that greater than archive_size parameter sets will be generated completely
+    randomly before switching to the Ant Colony parameter set generation algorithm.
     """
 
     def __init__(self, config):
@@ -1283,7 +1286,6 @@ class AntColony(Algorithm):
         for i in range(0, self.archive_size):
             v1 += (abs(self.archive[i]['pset'].get_param(var).value - ref) / (self.archive_size - 1))
         return self.convergence_rate * v1
-
 
     def generate_parameter_value(self, var):
         """
