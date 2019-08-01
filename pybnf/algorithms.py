@@ -1403,11 +1403,11 @@ class AntColony(Algorithm):
         # Check status of solution archive
         if len(self.archive) == self.archive_size:
             self.archive_ready = True
-            print2('Solution archive initialized.')
 
         # Re-sort the solution archive if updated
         if archive_updated:
             self.archive = sorted(self.archive, key=lambda x: x['score'])
+            print2("Solution archive updated.")
 
         # Update the sims_completed counter
         self.sims_completed += 1
