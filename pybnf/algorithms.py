@@ -1236,6 +1236,11 @@ class DifferentialEvolutionBase(Algorithm):
         if self.strategy not in options:
             raise PybnfError('Invalid differential evolution strategy "%s". Options are: %s' %
                              (self.strategy, ','.join(options)))
+        # Set pickn for new_individual method
+        if '1' in self.strategy:
+            self.pickn = 3
+        else:
+            self.pickn = 5
 
     def new_individual(self, individuals, base_index=None):
         """
@@ -1248,14 +1253,9 @@ class DifferentialEvolutionBase(Algorithm):
         # Choose a starting parameter set (either a random one or the base_index specified)
         # and others to cross over (always random)
 
-        if '1' in self.strategy:
-            pickn = 3
-        else:
-            pickn = 5
-
         # Choose pickn random unique indices, or if base_index was given, choose base_index followed by pickn-1 unique
         # indices
-        picks = np.random.choice(len(individuals), pickn, replace=False)
+        picks = np.random.choice(len(individuals), self.pickn, replace=False)
         if base_index is not None:
             if base_index in picks:
                 # If we accidentally picked base_index, replace it with picks[0], preserving uniqueness in our list
@@ -1351,6 +1351,14 @@ class DifferentialEvolution(DifferentialEvolutionBase):
         # each migration, used for all islands
         self.migration_perms = dict()  # How do we rearrange between islands on migration i?
         # For each migration, a list of num_to_migrate permutations of range(num_islands)
+
+        # Check num_per_island >= pickn
+        if self.num_per_island < self.pickn:
+            raise PybnfError('The number of individuals per island (%i) is too low.\n'
+                             'There must be >= %i individuals per island for diff. evolution'
+                             ' strategy "%s".\n' 
+                             'Increase the population size or reduce the number of islands.' %
+                             (self.num_per_island, self.pickn, self.strategy))
 
     def reset(self, bootstrap=None):
         super(DifferentialEvolution, self).reset(bootstrap)
@@ -1556,6 +1564,12 @@ class AsynchronousDifferentialEvolution(DifferentialEvolutionBase):
         self.sims_completed = 0
         self.individuals = []  # List of individuals
         self.fitnesses = []  # List of same shape, gives fitness of each individual
+
+        # Check population_size >= pickn
+        if self.population_size < self.pickn:
+            raise PybnfError('The population size (%i) is too low.\n'
+                             'The minimum population size is %i for async. diff. evolution strategy "%s".' %
+                             (self.population_size, self.pickn, self.strategy))
 
     def reset(self, bootstrap=None):
         super(AsynchronousDifferentialEvolution, self).reset(bootstrap)
