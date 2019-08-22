@@ -77,7 +77,7 @@ Experimental Data Files
 
 Experimental data file are plain text files with the extension “.exp” that contain whitespace-delimited tables of data to be used for fitting.
 
-The first line of the .exp file is the header. It should contain the character #, followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
+The first line of the .exp file is the header. It should contain the character ``#`` (optional, to match the output format of BioNetGen), followed by the names of each column. The first column name should be the name of the independent variable (e.g. “time” for a time course simulation). The rest of the column names should match the names of observables or functions in a BNGL file, or species in an SBML file (in this section, we refer to all of these options as "observables"). The following lines should contain data, with numbers separated by whitespace. Use “nan” to indicate missing data. Here is a simple example of an exp file. In this case, the corresponding BNGL file should contain observables named X and Y:
 ::
     #    time    X    Y
         0    5    1e4
@@ -102,9 +102,11 @@ Property (BPSL) files
 
 Property files are plain text files with the extension ".prop" that define qualitative system properties. In PyBNF, properties are expressed as inequality constraints to be imposed on the outputs of the model. Such constraints can be used to formalize qualitative data known about the biological system of interest. The syntax for writing .prop files, described in this section, is called the  Biological Property Specification Language (BPSL).
 
-Each line of the .prop file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a weight that controls the penalty to add to the objective function if the constraint is not satisfied. Specifically, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. 
+Each line of the .prop file should contain constraint declaration consisting of three parts: an inequality to be satisfied, an enforcement condition that specifies when in the simulation time course the constraint is applied, and a clause that specifies how the constraint should be incorporated into the objective function. 
 
-The weight may be omitted and defaults to 1. The inequality and enforcement clauses are required
+Two methods of incorporating constraints are supported. A static penalty model can be used by providing a `Weight`_ clause. In this case, if a constraint of the form :math:`A<B` with weight :math:`w` is violated, then the value added to the objective function is :math:`w*(A-B)`. Alternatively, a likelihood-based model can be used by providing a `Confidence`_ clause. In this case, the contribution is the negative log probability of constraint satisfaction. The likelihood-based model should be used when statistically rigorous results are important, such as when performing Bayesian uncertainty quantification. It is not recommended to mix between the static penalty and likelihood models within the same fitting problem. 
+
+If neither a weight nor a confidence clause is provided, a static penalty model is assumed with a weight of 1.
 
 Inequality
 ^^^^^^^^^^
@@ -122,6 +124,7 @@ Four keywords are available to specify when the inequality is enforced.
   ``A < 5 always``
 
 * ``once`` - Require that the inequality be true at at least one time point during the simulation.  
+
   ``A < 5 once``
 
 * ``at`` - Enforce the inequality at one specific time point. This could be a constant time point:  
@@ -145,12 +148,20 @@ Four keywords are available to specify when the inequality is enforced.
   ``A<5 at B=6 before`` - Enforce the inequality at the last time point before B=6.
 
   If the specified condition (B=6 in the example) is never met, then the constraint is not applied. It is often useful to add a second constraint to ensure that an "at" constraint is enforced. In this example, assuming the initial value of B is below 6, we could add the constraint ``B>=6 once``
+  
+  It is also possible to write inequalities with two ``at`` keywords to compare observables at two different values of the independent variable:
+  
+  ``A at 5 < B at C=6`` - Compares the value of A at time 5 to the value of B at the first time point such that C=6. 
 
 * ``between`` - Enforce the inequality at all times between the two specified time points. The time points may be specified in the same format as with the at keyword above, and should be separated by a comma.  
 
   ``A < 5 between 7, B=6`` would enforce the inequality from time=7 to the first time after time=7 such that B=6. 
 
   If the first condition (time=7 in the example) is never met, then the constraint is never enforced. If the second condition (B=6 in the example) is never met, then the constraint is enforced from the start time until the end of the simulation. 
+  
+* ``once between`` - Require that the inequality be satisfied at at least one point within the specified time range. The syntax is the same as for a ``between`` constraint. 
+
+  ``A < 5 once between 7, B=6`` would require that A<7 at some point between time=7 and the first time after time=7 such that B=6. 
 
 The above definitions assume that time is the independent variable, but note that the same keywords can be used for parameter scans with a different independent variable. 
 
@@ -168,6 +179,28 @@ The ``min`` keyword indicates the minimum possible penalty to apply if the const
 In some unusual cases, it is desirable to use a different observable for calculating penalties than the one used in the inequality. For example, the variable in the inequality might be a discrete variable, and it would be desirable to calculate the penalty with a corresponding continuous variable. This substitution may be made using the ``altpenalty`` keyword in the weight clause, followed by the new inequality to use for calculating the penalty. 
 
 ``A < 5 at B=3 weight 10 altpenalty A2<4 min 1`` - This constraint would check if A<5 when B reaches 3. If A >= 5 at that time, it instead calculates the penalty based on the inequality A2<4 with a weight of 10: :math:`10*\textrm{max}(0, A2-4)`. If the initial inequality is violated but the penalty inequality is satisfied, then the penalty is equal to the weight times the min value (10\*1 in the example), or zero if no min was declared. 
+
+Confidence
+^^^^^^^^^^
+
+A confidence clause can be provided instead of a weight clause to use a likelihood-based model to incorporate the constraint into the objective function. The clause consists of the ``confidence`` keyword, followed by a number, followed by the ``tolerance`` keyword, followed by a number. 
+
+Under this model, the inequality is rewritten in the form :math:`g<0` for a function :math:`g`. For example, in the constraint ``A<B at time=5``, :math:`g = A(5)-B(5)`, and in the constraint ``A>5 always``, :math:`g = 5 - \textrm{min}(A)` The ``tolerance`` represents the standard deviation of the quantity :math:`g`, which is assumed to have a Gaussian distribution.  The ``confidence`` represents the probability that the constraint should be satisfied by the model. With probability 1-confidence, there is assumed to be a model discrepancy, such that whether the constraint is satisfied is unrelated to the model or its parameters.
+
+The value added to the objective function given confidence :math:`conf`, tolerance :math:`tol`, and :math:`g` as defined above is :math:`-\textrm{log}( conf + (1-2conf) \textrm{cdf}(g,tol,0))`, where :math:`\textrm{cdf}(\mu,\sigma,0)` is the cumulative distribution function of a Gaussian distribution with mean :math:`\mu` and standard deviation :math:`\sigma`, evaluated at 0. 
+
+If ``tolerance`` is omitted, it is assumed to be 0, resulting in a step function.
+
+The following examples illustrate the use of confidence clauses:
+
+* ``A < 5 at time = 4 confidence 0.98 tolerance 1`` - The term added to the objective function would be :math:`-\textrm{log}(0.01 + 0.98*\textrm{cdf}(A(4)-5, 1, 0))`
+
+* ``A > 5 always confidence 0.98`` - Tolerance is assumed to be 0. The term added to the objective function would be :math:`-\textrm{log}(0.99)` if :math:`min(A)>5` or :math:`-\textrm{log}(0.01)` otherwise. 
+
+The keywords ``pmin`` and ``pmax`` may be used in place of ``confidence`` to specify different minimum and maximum probabilities of the constraint. In this case, the term added to the objectve function is :math:`-\textrm{log}( p_{min} + (p_{max}-p_{min}) \textrm{cdf}(g,tol,0))`. For example
+
+* ``A < 5 at time = 4 pmin 0.01 pmax 0.98`` - The term added to the objective function would be :math:`-\textrm{log}(0.01 + 0.97*\textrm{cdf}(A(4)-5, 1, 0))`
+
 
 Constraints involving multiple models
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

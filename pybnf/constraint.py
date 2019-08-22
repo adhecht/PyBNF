@@ -9,6 +9,7 @@ import pyparsing as pp
 import numpy as np
 import re
 import logging
+from math import erf
 
 
 logger = logging.getLogger(__name__)
@@ -73,15 +74,17 @@ class ConstraintSet:
                 except pp.ParseBaseException:
                     raise PybnfError("Unable to parse constraint '%s' at line %i of %s" % (line, linenum, filename))
                 # Convert all the attributes of the parsed line into args to use to create the constraint
-                try:
-                    quant1 = float(p.ineq[0])
-                except ValueError:
-                    quant1 = p.ineq[0]
-                sign = p.ineq[1]
-                try:
-                    quant2 = float(p.ineq[2])
-                except ValueError:
-                    quant2 = p.ineq[2]
+                if p.ineq:
+                    # Normal case - for everything except "split at" constraint
+                    try:
+                        quant1 = float(p.ineq[0])
+                    except ValueError:
+                        quant1 = p.ineq[0]
+                    sign = p.ineq[1]
+                    try:
+                        quant2 = float(p.ineq[2])
+                    except ValueError:
+                        quant2 = p.ineq[2]
                 if p.weight_expr:
                     weight = float(p.weight_expr.weight)
                     if p.weight_expr.altpenalty:
@@ -94,16 +97,63 @@ class ConstraintSet:
                     else:
                         altpenalty = None
                     minpenalty = float(p.weight_expr.min) if p.weight_expr.min else 0.
+                    pmin = None
+                    pmax = None
+                    tolerance = None
+                    if p.likelihood_expr:
+                        # Should not happen if parsing is working right
+                        raise ValueError('Parsed with both weight_expr and likelihood_expr')
+                elif p.likelihood_expr:
+                    if p.likelihood_expr.confidence:
+                        confidence = float(p.likelihood_expr.confidence)
+                        pmin = (1. - confidence) / 2.
+                        pmax = 1. - pmin
+                    else:
+                        pmin = float(p.likelihood_expr.pmin)
+                        pmax = float(p.likelihood_expr.pmax)
+                    tolerance = float(p.likelihood_expr.tolerance) if p.likelihood_expr.tolerance else 0.
+                    weight = None
+                    altpenalty = None
+                    minpenalty = None
                 else:
                     weight = 1.
                     altpenalty = None
                     minpenalty = 0.
+                    pmin = None
+                    pmax = None
+                    tolerance = None
 
-                weight *= scale  # Scale the weight by the specified factor
+                if weight is not None:
+                    weight *= scale  # Scale the weight by the specified factor
 
                 # Check the constraint type based on the parse object, extract the constraint-type-specific args, and
                 # make the constraint
-                if p.enforce[0] == 'at':
+                if p.split:
+                    # Special case for "split at" combining inequality and enforcement clauses
+                    quant1 = p.split.obs1
+                    quant2 = p.split.obs2
+                    if len(p.split.at1[1]) == 1:
+                        atvar1 = None
+                        atval1 = float(p.split.at1[1][0])
+                    else:
+                        atvar1 = p.split.at1[1][0]
+                        atval1 = float(p.split.at1[1][1])
+                    if len(p.split.at2[1]) == 1:
+                        atvar2 = None
+                        atval2 = float(p.split.at2[1][0])
+                    else:
+                        atvar2 = p.split.at2[1][0]
+                        atval2 = float(p.split.at2[1][1])
+                    sign = p.split.sign
+                    repeat = (len(p.split.at1) >= 3 and p.split.at1[2] == 'everytime') or \
+                             (len(p.split.at2) >= 3 and p.split.at2[2] == 'everytime')
+                    before1 = (len(p.split.at1) >= 3 and p.split.at1[-1] == 'before')
+                    before2 = (len(p.split.at2) >= 3 and p.split.at2[-1] == 'before')
+                    con = SplitAtConstraint(quant1, atvar1, atval1, sign, quant2, atvar2, atval2, self.base_model,
+                                            self.base_suffix, weight, altpenalty=altpenalty, minpenalty=minpenalty,
+                                            repeat=repeat, before1=before1, before2=before2, pmin=pmin, pmax=pmax,
+                                            tolerance=tolerance)
+                elif p.enforce[0] == 'at':
                     if len(p.enforce[1]) == 1:
                         atval = float(p.enforce[1][0])
                         atvar = None
@@ -113,13 +163,10 @@ class ConstraintSet:
                     repeat = (len(p.enforce) >= 3 and p.enforce[2] == 'everytime')
                     before = (len(p.enforce) >= 3 and p.enforce[-1] == 'before')
                     con = AtConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before)
-                elif p.enforce[0] == 'always':
-                    con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
-                                           minpenalty=minpenalty)
-                elif p.enforce[0] == 'once':
-                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty, minpenalty)
-                elif p.enforce[0] == 'between':
+                                           minpenalty=minpenalty, atvar=atvar, atval=atval, repeat=repeat, before=before,
+                                       pmin=pmin, pmax=pmax, tolerance=tolerance)
+                elif p.enforce[0] == 'between' or p.enforce[0] == 'once between':
+                    once = (p.enforce[0] == 'once between')
                     if len(p.enforce[1]) == 1:
                         startval = float(p.enforce[1][0])
                         startvar = None
@@ -134,7 +181,13 @@ class ConstraintSet:
                         endval = float(p.enforce[2][1])
                     con = BetweenConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
                                            minpenalty=minpenalty, startvar=startvar, startval=startval, endvar=endvar,
-                                           endval=endval)
+                                           endval=endval, pmin=pmin, pmax=pmax, tolerance=tolerance, once=once)
+                elif p.enforce[0] == 'always':
+                    con = AlwaysConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty=altpenalty,
+                                           minpenalty=minpenalty, pmin=pmin, pmax=pmax, tolerance=tolerance)
+                elif p.enforce[0] == 'once':
+                    con = OnceConstraint(quant1, sign, quant2, self.base_model, self.base_suffix, weight, altpenalty,
+                                         minpenalty, pmin, pmax, tolerance)
                 else:
                     raise RuntimeError('Unknown enforcement keyword %s' % p.enforce[0])
                 self.constraints.append(con)
@@ -145,28 +198,38 @@ class ConstraintSet:
         obs = pp.Word(pp.alphas, pp.alphanums+'_.')
         point = pp.Literal(".")
         e = pp.CaselessLiteral("E")
-        const = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
+        number = pp.Combine(pp.Word("+-" + pp.nums, pp.nums) +
                          pp.Optional(point + pp.Optional(pp.Word(pp.nums))) +
                          pp.Optional(e + pp.Word("+-" + pp.nums, pp.nums)))
         iop = pp.oneOf("< <= > >=")
-        ineq0 = obs + iop + (obs ^ const)
-        ineq1 = const + iop + obs
+        ineq0 = obs + iop + (obs ^ number)
+        ineq1 = number + iop + obs
         ineq = ineq0 ^ ineq1
         equals = pp.Suppress('=')
-        obs_crit = obs - equals - const
-        enforce_crit = const | obs_crit
+        obs_crit = obs - equals - number
+        enforce_crit = number | obs_crit
         enforce_at = pp.CaselessLiteral('at') - pp.Group(enforce_crit) - pp.Optional(pp.oneOf('everytime first', caseless=True)) -\
             pp.Optional(pp.CaselessLiteral('before'))
-        enforce_between = pp.CaselessLiteral('between') - pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
+        enforce_between = pp.Or([pp.CaselessLiteral('once between'), pp.CaselessLiteral('between')]) - \
+                          pp.Group(enforce_crit) - pp.Suppress(',') - pp.Group(enforce_crit)
         enforce_other = pp.oneOf('once always', caseless=True)
         enforce = enforce_at ^ enforce_between ^ enforce_other
-        min = pp.CaselessLiteral('min') - const.setResultsName('min')
+        split = obs.setResultsName('obs1') - enforce_at.setResultsName('at1') - iop.setResultsName('sign') - \
+                obs.setResultsName('obs2') - enforce_at.setResultsName('at2')
+        min = pp.CaselessLiteral('min') - number.setResultsName('min')
         penalty = pp.CaselessLiteral('altpenalty') - pp.Group(ineq).setResultsName('altpenalty')
-        wt_expr = const.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
+        wt_expr = number.setResultsName('weight') - pp.Optional(penalty) - pp.Optional(min)
         weight = pp.CaselessLiteral('weight') - wt_expr
+        confidence = pp.CaselessLiteral('confidence') - number.setResultsName('confidence')
+        pmin_pmax = pp.CaselessLiteral('pmin') - number.setResultsName('pmin') - \
+                    pp.CaselessLiteral('pmax') - number.setResultsName('pmax')
+        likelihood = (confidence ^ pmin_pmax) - \
+                     pp.Optional(pp.CaselessLiteral('tolerance') - number.setResultsName('tolerance'))
         comment = pp.Suppress(pp.Literal('#') - pp.ZeroOrMore(pp.Word(pp.printables)))
-        constraint = pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce') + \
-                     pp.Optional(pp.Group(weight).setResultsName('weight_expr')) + pp.Optional(comment)
+        constraint = ((pp.Group(ineq).setResultsName('ineq') + pp.Group(enforce).setResultsName('enforce')) ^
+                      pp.Group(split).setResultsName('split')) + \
+                     pp.Optional(pp.Group(weight).setResultsName('weight_expr') ^
+                                 pp.Group(likelihood).setResultsName('likelihood_expr')) + pp.Optional(comment)
 
         return constraint.parseString(line, parseAll=True)
 
@@ -176,9 +239,15 @@ class Constraint:
     Abstract class representing an optimization constraint with a penalty for violating the constraint
     """
 
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 pmin=None, pmax=None, tolerance=None):
         """
         Create a constraint of the form (quant1) (sign) (quant2)
+        Depending on which parameters are passed, the constraint automatically chooses a model for penalty calculation
+        If weight and/or altpenalty are passed, uses the static penalty method
+        If confidence and/or tolerance are passed, uses the log likelihood method with a Gaussian CDF.
+        The two penalty models should not be mixed.
+
         :param quant1: String observable name or float. String could be in the form suffix.Observable to refer to any
         observable in the fitting run.
         :param sign: One of '<', '<=', '>', '>='
@@ -189,6 +258,11 @@ class Constraint:
         constraint inequality to calculate the penalty
         :param minpenalty: The minimum penalty that must be applied if the constraint is violated, regardless of how
         low the extent of violation is.
+        :param pmin: Using the log likelihood penalty, the minimum possible probability of this constraint.
+        Represents the probability that the constraint is satisfied regardless of the output of the model
+        :param pmax: Using the log likelihood penalty, the maximum possible probability of this constraint.
+        Represents the probability that the constraint is violated regardless of the output of the model
+        :param tolerance: Using the log likelihood penalty, the standard deviation of the Gaussian CDF.
         """
         # Flip the inequality if it's a '>', so we can always assume a '<'
         if sign in ('>', '>='):
@@ -204,9 +278,9 @@ class Constraint:
 
         self.base_model = base_model
         self.base_suffix = base_suffix
+
         self.weight = weight
         self.min_penalty = minpenalty
-
         if altpenalty:
             # Also force the altpenalty to be a '<'.
             # Never matters whether this is an 'or equal' or not.
@@ -220,6 +294,34 @@ class Constraint:
         else:
             self.alt1 = None
             self.alt2 = None
+
+        self.pmin = pmin
+        self.pmax = pmax
+        self.tolerance = tolerance
+
+        # Choose penalty model depending on what is set to None
+        # Check for invalid combinations of keys, but these should have been caught during parsing.
+        if weight is not None:
+            self.penalty_model = 'static'
+            if pmin is not None or pmax is not None or tolerance is not None:
+                raise ValueError('Constraint %s%s%s has a weight, and so should not have a pmin, pmax and/or tolerance'
+                                 % (quant1, sign, quant2))
+        elif pmin is not None:
+            self.penalty_model = 'likelihood'
+            if pmax is None:
+                raise ValueError('Constraint %s%s%s has a pmin but not a pmax' % (quant1, sign, quant2))
+            if tolerance is None:
+                raise ValueError('Constraint %s%s%s has a pmin and pmax but not a tolerance' % (quant1, sign, quant2))
+            if altpenalty is not None:
+                raise ValueError('Constraint %s%s%s should not have both a confidence and a altpenalty' %
+                                 (quant1, sign, quant2))
+            if pmin < 0. or pmax > 1.:
+                raise PybnfError('Constraint %s%s%s has invalid probabilities. Settings for confidence, pmin, and/or '
+                                 'pmax must be between 0 and 1.' % (quant1, sign, quant2))
+            if pmin > pmax:
+                raise PybnfError('Constraint %s%s%s has pmin set larger than pmax.' % (quant1, sign, quant2))
+        else:
+            raise ValueError('Constraint %s%s%s must have either a weight or a confidence' % (quant1, sign, quant2))
 
         # Key tuples need to be initialized after we receive the first data result, so we can figure out the keys.
         self.qkeys1 = None
@@ -294,10 +396,27 @@ class Constraint:
         """
         return sim_data_dict[keys[0]][keys[1]][keys[2]]
 
-    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None):
+    def get_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
         """
         Helper function for calculating the penalty, that can be called from the subclasses.
-        Enforces the constraint for the entire interval unless the once option is set.
+        Chooses to call either get_static_penalty or get_log_likelihood depending on the penalty model
+        used for this constraint
+        """
+        if self.penalty_model == 'static':
+            return self.get_static_penalty(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        elif self.penalty_model == 'likelihood':
+            return self.get_log_likelihood(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        else:
+            raise ValueError('Invalid penalty model: %s' % self.penalty_model)
+
+    def get_difference(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+        """
+        Helper function for calculating the penalty, that can be called from the subclasses.
+        Calculates the difference between the two sides of the inequality. A negative value means the inequality is
+        satisfied.
+        Considers the worst case over the specified interval, or the best case if once=True.
+
+        The result can be used to calculate the penalty using a static penalty model or a likelihood model.
 
         :param sim_data_dict: The dictionary of data objects
         :param imin: First index at which to check the constraint
@@ -306,6 +425,8 @@ class Constraint:
         :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
         equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
         case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
         :return:
         """
 
@@ -313,6 +434,16 @@ class Constraint:
             raise PybnfError('Applying constraint %s<%s. Constraints involving observables that have different time '
                              'points in their simulation outputs are not currently supported' %
                              (self.quant1, self.quant2))
+
+        if imin2 is None:
+            imin2 = imin
+        if imax2 is None:
+            imax2 = imax
+        if (imax is not None and imax-imin != imax2-imin2) or \
+                (imax is None and (imin != imin2 or imax2 is not None)):
+            # Note that the case of imax=None occurs if the desired max index is the end of the time course.
+            # Should not happen, because currently only the Split At constraint uses imin2 and imax2
+            raise ValueError('imin2:imax2 has a different length than imin:imax')
 
         if isinstance(self.quant1, str):
             q1_col = self.index(sim_data_dict, self.qkeys1)
@@ -325,17 +456,36 @@ class Constraint:
             q2_col = self.index(sim_data_dict, self.qkeys2)
             if require_length and len(q2_col) != require_length:
                 length_error()
-            q2 = q2_col[imin:imax]
+            q2 = q2_col[imin2:imax2]
         else:
             q2 = self.quant2
 
         try:
             if once:
-                penalty = np.min(q1-q2)
+                difference = np.min(q1 - q2)
             else:
-                penalty = np.max(q1 - q2)
+                difference = np.max(q1 - q2)
         except ValueError:
             length_error()
+
+        return difference
+
+    def get_static_penalty(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+        """
+        Helper function for calculating the static penalty, that can be called from the subclasses.
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
+        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+        case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
+        :return:
+        """
+        penalty = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
 
         if penalty > 0 or (penalty == 0. and not self.or_equal):
             # Failed constraint
@@ -363,6 +513,51 @@ class Constraint:
 
         return penalty * self.weight
 
+    def get_log_likelihood(self, sim_data_dict, imin, imax, once=False, require_length=None, imin2=None, imax2=None):
+        """
+        Helper function for calculating the negative log likelihood of constraint satisfaction given the parameters,
+        i.e. a likelihood-based penalty function.
+        The likelihood is calculated with a Gaussian CDF defined in terms of this constraint's confidence
+        and tolerance
+
+        :param sim_data_dict: The dictionary of data objects
+        :param imin: First index at which to check the constraint
+        :param imax: Last index at which to check the constraint (exclusive)
+        :param once: If true, enforce that the constraint holds once at some point during the time interval
+        :param require_length: If set to an integer, raise an error if the length of the selected data column(s) is not
+        equal to that value. (Used to check that "at" and "between" constraints are not encountering an unsupported
+        case)
+        :param imin2: If specified, use this different index for quantity 2
+        :param imax2: If specified, use this different index for quantity 2
+        :return:
+        """
+
+        def cdf(x):
+            """
+            The cumulative distribution function of a Gaussian distribution with mean 0 and variance 1
+
+            Previous code versions used the approximation cdf(x) = 1./(1. + np.exp(-1.7*x))
+            """
+            return (1. + erf(x / np.sqrt(2.))) / 2.
+
+        difference = self.get_difference(sim_data_dict, imin, imax, once, require_length, imin2, imax2)
+        if self.tolerance == 0:
+            # Edge case where cdf is a step function
+            if difference < 0 or (difference == 0 and self.or_equal):
+                log_likelihood = -np.log(self.pmax)
+            else:
+                log_likelihood = -np.log(self.pmin)
+        else:
+            # Standard case
+            # Note that a negative difference is good, hence the sign convention in the calculation below.
+            k = self.tolerance
+            prob = cdf(-difference/k)
+            adjusted_prob = (self.pmax - self.pmin) * prob + self.pmin
+            log_likelihood = -np.log(adjusted_prob)
+        return log_likelihood
+
+
+
     def penalty(self, sim_data_dict):
         """
         penalty function for violating the constraint. Returns 0 if constraint is satisfied, or a positive value
@@ -377,7 +572,7 @@ class Constraint:
 
 class AtConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, atvar, atval, altpenalty=None, minpenalty=0.,
-                 repeat=False, before=False):
+                 repeat=False, before=False, pmin=None, pmax=None, tolerance=None):
         """
         Creates a new constraint of the form
 
@@ -390,7 +585,8 @@ class AtConstraint(Constraint):
         :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
+                         tolerance)
         self.atvar = atvar
         self.atval = atval
         self.repeat = repeat
@@ -454,14 +650,129 @@ class AtConstraint(Constraint):
 
         return penalty
 
+class SplitAtConstraint(Constraint):
+    def __init__(self, quant1, atvar1, atval1, sign, quant2, atvar2, atval2, base_model, base_suffix,
+                 weight, altpenalty=None, minpenalty=0.,
+                 repeat=False, before1=False, before2=False, pmin=None, pmax=None, tolerance=None):
+        """
+        Creates a new constraint of the form
+
+        X1 at X2=value < X3 at X4=value
+
+        :param atvar: Variable checked to determine the 'at' condition, or None for the independent variable
+        :param atval: Value that the atvar must take to activate the 'at' condition
+        :param repeat: If True, enforce the constraint every time the 'at' condition is met. If False, only enforce
+        the first time
+        :param before: If True, enforce the constraint at the time point immediately before the 'at' condition is met
+        """
+
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
+                         tolerance)
+
+        # Since the superclass flips the sign for ">", we need to also flip the "at" conditions
+        if sign in ('>', '>='):
+            self.atvar1 = atvar2
+            self.atval1 = atval2
+            self.atvar2 = atvar1
+            self.atval2 = atval1
+            self.before1 = before2
+            self.before2 = before1
+        else:
+            self.atvar1 = atvar1
+            self.atval1 = atval1
+            self.atvar2 = atvar2
+            self.atval2 = atval2
+            self.before1 = before1
+            self.before2 = before2
+        if repeat:
+            raise PybnfError('The "repeat" keyword is not currently supported for constraints with two "at" conditions')
+
+        self.atkeys1 = None
+        self.atkeys2 = None
+        logger.debug("Created split 'at' constraint %s<%s" % (self.quant1, self.quant2))
+
+    def find_keys(self, sim_data_dict):
+        """
+        Function to be called on the first evaluation of the penalty.
+        Read through the data dictionary and figure out what keys I need to use to access each relevant variable.
+
+        This needs to be done kind of by brute force, because we were never told the model file to use, and it's even
+        possible the input is poorly defined by referring to a suffix that exists in multiple models.
+        :param sim_data_dict:
+        :return:
+        """
+
+        keylist = []
+        for q in (self.quant1, self.quant2, self.alt1, self.alt2, self.atvar1, self.atvar2):
+            key = self.get_key(q, sim_data_dict)
+            keylist.append(key)
+        self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1, self.atkeys2 = keylist
+        if self.atkeys1 is None:
+            # No name was specified for atvar; we default to the independent variable of the default suffix
+            self.atkeys1 = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+        if self.atkeys2 is None:
+            # No name was specified for atvar; we default to the independent variable of the default suffix
+            self.atkeys2 = (self.base_model, self.base_suffix,
+                           sim_data_dict[self.base_model][self.base_suffix].indvar)
+        logger.debug("Got keys for split 'at' constraint %s<%s: %s" %
+                      (self.quant1, self.quant2, [self.qkeys1, self.qkeys2, self.akeys1, self.akeys2, self.atkeys1,
+                                                  self.atkeys2]))
+
+    def penalty(self, sim_data_dict):
+        """
+        Compute the penalty
+        """
+
+        # Load the keys if we haven't yet done so
+        if not self.atkeys1:
+            self.find_keys(sim_data_dict)
+
+        # Find the index where the when condition is met
+        atdata1 = self.index(sim_data_dict, self.atkeys1)
+        at_col1 = atdata1 < self.atval1
+        # Make array that is True at every point where the atvar crosses the atval
+        flip_points1 = at_col1[:-1] != at_col1[1:]
+        flip_inds1 = np.nonzero(flip_points1)[0]
+
+        # Repeat for 2nd at condition
+        atdata2 = self.index(sim_data_dict, self.atkeys2)
+        at_col2 = atdata2 < self.atval2
+        flip_points2 = at_col2[:-1] != at_col2[1:]
+        flip_inds2 = np.nonzero(flip_points2)[0]
+
+        if len(flip_inds1) == 0 or len(flip_inds2) == 0:
+            # One of the at conditions was not met, so constraint is not enforced.
+            return 0.
+
+        fi1 = flip_inds1[0]
+        fi2 = flip_inds2[0]
+
+        # Make sure we pick the correct end of the interval if there's a point equal to the "at"
+        if np.isclose(atdata1[fi1+1], self.atval1, atol=0.) and not (np.isclose(atdata1[fi1], self.atval1, atol=0.)):
+            fi1 += 1
+        if np.isclose(atdata2[fi2+1], self.atval2, atol=0.) and not (np.isclose(atdata2[fi2], self.atval2, atol=0.)):
+            fi2 += 1
+        # If constraint was declared with "before", go back 1.
+        if self.before1 and fi1 > 0:
+            fi1 -= 1
+        if self.before2 and fi2 > 0:
+            fi2 -= 1
+        penalty = self.get_penalty(sim_data_dict, fi1, fi1+1, require_length=len(at_col1), imin2=fi2, imax2=fi2+1)
+        # Todo - if atvar and quant1 were simulated on different time scales, need to scour independent variable cols
+
+        return penalty
 
 class BetweenConstraint(Constraint):
     def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, startvar, startval, endvar, endval, altpenalty=None,
-                 minpenalty=0.):
+                 minpenalty=0., pmin=None, pmax=None, tolerance=None, once=False):
         """
         Creates a new constraint of the form
 
         X1 < X2 between X3=value  X4=value
+
+        or, if once=True,
+        X1 < X2 once between X3=value  X4=value
 
         :param startvar: Variable checked to determine the start of the interval, or None for the independent variable
         :param startval: Value that the startvar must take to trigger the start of the interval
@@ -469,7 +780,8 @@ class BetweenConstraint(Constraint):
         :param endval: Value that the endvar must take to trigger the start of the interval
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
+                         tolerance)
 
         self.startvar = startvar
         self.startval = startval
@@ -478,6 +790,7 @@ class BetweenConstraint(Constraint):
 
         self.startkeys = None
         self.endkeys = None
+        self.once = once
         logger.debug("Created 'between' constraint %s<%s" % (self.quant1, self.quant2))
 
     def find_keys(self, sim_data_dict):
@@ -548,20 +861,22 @@ class BetweenConstraint(Constraint):
                 and not (np.isclose(enddat[end], self.endval, atol=0.)):
             end += 1
 
-        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol))
+        penalty = self.get_penalty(sim_data_dict, start, end+1, require_length=len(endcol), once=self.once)
 
         return penalty
 
 
 class AlwaysConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 pmin=None, pmax=None, tolerance=None):
         """
         Creates a new constraint of the form
 
         X1>X2 always
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
+                         tolerance)
         logger.debug("Created 'always' constraint %s<%s" % (self.quant1, self.quant2))
 
     def penalty(self, sim_data_dict):
@@ -579,14 +894,16 @@ class AlwaysConstraint(Constraint):
 
 
 class OnceConstraint(Constraint):
-    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.):
+    def __init__(self, quant1, sign, quant2, base_model, base_suffix, weight, altpenalty=None, minpenalty=0.,
+                 pmin=None, pmax=None, tolerance=None):
         """
         Creates a new constraint of the form
 
         X1>X2 once
         """
 
-        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty)
+        super().__init__(quant1, sign, quant2, base_model, base_suffix, weight, altpenalty, minpenalty, pmin, pmax,
+                         tolerance)
         logger.debug("Created 'once' constraint %s<%s" % (self.quant1, self.quant2))
 
     def penalty(self, sim_data_dict):
