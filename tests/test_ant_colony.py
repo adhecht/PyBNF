@@ -4,7 +4,6 @@ from os import mkdir, path
 from shutil import rmtree
 from copy import deepcopy
 from numpy import log10
-
 class TestAntColony:
     def __init__(self):
         pass
@@ -13,9 +12,7 @@ class TestAntColony:
     def setup_class(cls):
         cls.exp_data = [
             '# time    v1_result    v2_result    v3_result  v1_result_SD  v2_result_SD  v3_result_SD\n',
-            ' 0 3   4   5   0.1   0.2   0.3\n',
-            ' 1 2   3   6   0.1   0.1   0.1\n',
-            ' 2 4   2   10  0.3   0.1   1.0\n'
+            ' 1 2   3   6   0.1   0.1   0.1\n'
         ]
         cls.exp_data_obj = data.Data()
         cls.exp_data_obj.data = cls.exp_data_obj._read_file_lines(cls.exp_data, '\s+')
@@ -31,7 +28,7 @@ class TestAntColony:
                                            'convergence_speed':0.005, 'archive_size':10, 
                                            'fit_type': 'aco', 
                                            'models': {'bngl_files/parabola.bngl'},
-                                                      'exp_data': {'bngl_files/par1.exp'},
+                                           'exp_data': {'bngl_files/par1.exp'},
                                            'initialization': 'lh', 
                                            'bngl_files/parabola.bngl': ['bngl_files/par1.exp'],
                                            'output_dir': 'test_aco', 
